@@ -11,14 +11,10 @@ from matplotlib import lines
 import numpy as np
 import torch
 
-from DDQN.DDQN import Double_DQN
-from DDQN.DQNAgent import MyDQNAgent
 from Environment.init_env import init_env
+from utils.validate import EvaluationConfig, build_agent, load_checkpoint, select_action
 
-GAMMA = 0.993
-LEARNING_RATE = 5e-4
-TARGET_UPDATE_STEPS = 1
-DEFAULT_MAX_STEPS = 3500
+DEFAULT_MAX_STEPS = EvaluationConfig.step_num
 
 
 def set_seed(seed: int) -> None:
@@ -30,36 +26,13 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def load_agent(model_path: Path, state_size: int, action_size: int) -> MyDQNAgent:
-    """Load a trained agent from disk for evaluation."""
-    model = Double_DQN(state_size=state_size, action_size=action_size)
-    agent = MyDQNAgent(
-        model,
-        action_size,
-        gamma=GAMMA,
-        lr=LEARNING_RATE,
-        e_greed=0.0,
-        e_greed_decrement=0.0,
-        update_target_steps=TARGET_UPDATE_STEPS,
-    )
-
-    checkpoint = torch.load(model_path, map_location=torch.device("cpu"))
-    state_dict = checkpoint.get("model", checkpoint)
-    agent.model.load_state_dict(state_dict)
-    agent.target_model.load_state_dict(state_dict)
-    agent.model.eval()
-    agent.target_model.eval()
-
-    return agent
-
-
-def simulate_episode(agent: MyDQNAgent, env, max_steps: int):
+def simulate_episode(agent, env, max_steps: int):
     """Run a single evaluation episode and collect trajectory data."""
     state, escape_flag, info = env.reset()
     obs_history = [env._get_obs().copy()]
 
     for _ in range(max_steps):
-        action = agent.predict(state)
+        action = select_action(agent, state)
         next_state, _reward, escape_flag, info = env.step(action)
         obs_history.append(env._get_obs().copy())
         state = next_state
@@ -223,7 +196,30 @@ def main():
     parser = argparse.ArgumentParser(description="Visualize the trained policy as a 3D GIF")
     parser.add_argument("--model-path", type=Path, default=Path("best.pth"), help="Path to the trained checkpoint")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible scenarios")
-    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS, help="Maximum number of simulated steps")
+    parser.add_argument(
+        "--step-num",
+        type=int,
+        default=DEFAULT_MAX_STEPS,
+        help="Maximum number of steps per episode, matching training/validation",
+    )
+    parser.add_argument(
+        "--num-missiles",
+        type=int,
+        default=EvaluationConfig.num_missiles,
+        help="Number of incoming missiles to initialise the environment with",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=EvaluationConfig.gamma,
+        help="Discount factor used when building the evaluation agent",
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=EvaluationConfig.learning_rate,
+        help="Learning rate placeholder for constructing the evaluation agent",
+    )
     parser.add_argument("--fps", type=int, default=15, help="Frames per second for the output GIF")
     parser.add_argument(
         "--output",
@@ -235,18 +231,25 @@ def main():
 
     set_seed(args.seed)
 
-    # Initialise a temporary environment to extract dimensions.
-    env_for_dims, _, _ = init_env()
-    state_size = env_for_dims._getNewStateSpace()[0]
-    action_size = env_for_dims._get_actSpace()
+    config = EvaluationConfig(
+        episodes=1,
+        num_missiles=args.num_missiles,
+        step_num=args.step_num,
+        gamma=args.gamma,
+        learning_rate=args.learning_rate,
+    )
 
-    agent = load_agent(args.model_path, state_size, action_size)
+    env, _, _ = init_env(num_missiles=config.num_missiles, StepNum=config.step_num)
+    state_size = env._getNewStateSpace()[0]
+    action_size = env._get_actSpace()
 
-    # Re-seed and recreate the environment so that the scenario is reproducible.
+    agent = build_agent(state_size, action_size, config)
+    load_checkpoint(agent, str(args.model_path))
+
+    # Re-seed so that the episode rollout matches training/validation deterministically.
     set_seed(args.seed)
-    env, _, _ = init_env()
 
-    observations, missile_num, interceptor_num, escape_flag, info = simulate_episode(agent, env, args.max_steps)
+    observations, missile_num, interceptor_num, escape_flag, info = simulate_episode(agent, env, config.step_num)
 
     plane_traj = observations[:, 0, :3]
     missile_traj = observations[:, 1 : 1 + missile_num, :3]
