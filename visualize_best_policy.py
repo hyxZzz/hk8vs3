@@ -1,4 +1,5 @@
-"""Generate a 3D GIF visualization of the trained policy."""
+"""Generate a 3D GIF visualization of the trained policy.
+python visualize_best_policy.py --seed 2 --model-path """
 import argparse
 import random
 from pathlib import Path
